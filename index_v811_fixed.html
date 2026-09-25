@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Roman Tennis Scanner V8.1.1</title>
+<style>
+:root{
+  --bg:#0e1117;--card:#171b24;--line:#2b3240;--txt:#f4f7fb;--muted:#9aa6b6;
+  --blue:#3b82f6;--green:#22c55e;--amber:#f59e0b;--red:#ef4444
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+.wrap{max-width:960px;margin:auto;padding:14px}
+h1{font-size:22px;margin:0 0 4px}
+.sub,.small{color:var(--muted);font-size:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:12px 0}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media(max-width:680px){.grid{grid-template-columns:1fr}}
+label{font-size:12px;color:var(--muted);display:block;margin-bottom:5px}
+input,select,button{width:100%;font-size:16px;border-radius:10px;border:1px solid var(--line);padding:11px}
+input,select{background:#10141b;color:var(--txt)}
+button{border:0;background:var(--blue);color:#fff;font-weight:800}
+button:disabled{opacity:.55}
+.status{margin-top:9px;font-size:13px;color:var(--muted)}
+.good{color:var(--green)}.warn{color:var(--amber)}.bad{color:var(--red)}
+.match{border-top:1px solid var(--line);padding:13px 0}.match:first-child{border-top:0}
+.name{font-weight:850}
+.meta{color:var(--muted);font-size:12px;line-height:1.55}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.row button{width:auto;padding:8px 10px;font-size:13px}
+.badge{display:inline-block;font-size:11px;font-weight:900;margin-bottom:6px}
+.qualifier{color:#64e48b}.watch{color:#f8bd55}.skip{color:#ff7c7c}
+.result{font-size:20px;font-weight:900;margin:8px 0}.bigprob{font-size:30px;font-weight:900}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media(max-width:720px){.two{grid-template-columns:1fr}}
+.panel{background:#11161e;border:1px solid var(--line);border-radius:13px;padding:12px}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:9px}
+.stat{background:#171d27;border:1px solid var(--line);border-radius:9px;padding:8px}.stat b{display:block}.stat span{font-size:10px;color:var(--muted)}
+.verify{margin-top:12px;padding:12px;border:1px dashed #3f4a5e;border-radius:11px}
+.verify-grid{display:grid;grid-template-columns:1fr auto;gap:8px}.verify-grid button{width:auto}
+table{width:100%;border-collapse:collapse;margin-top:8px;font-size:12px}td,th{padding:7px;border-bottom:1px solid var(--line);text-align:left}
+.section-title{font-weight:900;font-size:16px;margin-bottom:4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Roman Tennis Scanner V8.1.1</h1>
+  <div class="sub">Single-file version • GitHub Pages → LiveTennisAPI directly • no Cloudflare</div>
+
+  <div class="card">
+    <div class="grid">
+      <div>
+        <label>LiveTennisAPI key</label>
+        <input id="key" type="password" placeholder="Paste API key manually">
+      </div>
+      <div>
+        <label>Window</label>
+        <select id="hours"><option>1</option><option selected>2</option><option>3</option></select>
+      </div>
+      <div>
+        <label>Requests per scan</label>
+        <select id="pages"><option value="1" selected>1 request</option><option value="2">2 requests</option></select>
+      </div>
+      <div>
+        <label>Shortlist baseline</label>
+        <select id="min"><option selected>65</option><option>70</option><option>75</option></select>
+      </div>
+    </div>
+    <button id="scan" style="margin-top:10px">SCAN NOW</button>
+    <div id="status" class="status"></div>
+  </div>
+
+  <div id="matches" class="card"><div class="small">No scan yet.</div></div>
+  <div id="analysis" class="card" style="display:none"></div>
+</div>
+
+<script>
+(()=>{
+const API='https://api.livetennisapi.com/api/public/v1';
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
+const num=v=>{const x=Number(v);return Number.isFinite(x)?x:null};
+const norm=s=>String(s||'').trim().toLowerCase();
+let matches=[];
+
+function headers(){
+  const key=$('key').value.trim();
+  return {'X-API-Key':key,'Authorization':'Bearer '+key,'Accept':'application/json'};
+}
+async function api(path){
+  const r=await fetch(API+path,{headers:headers()});
+  let d={}; try{d=await r.json()}catch{}
+  if(!r.ok) throw Error(String(d?.detail||d?.message||d?.error||('API '+r.status)));
+  return d;
+}
+function wat(iso){
+  return new Intl.DateTimeFormat('en-GB',{
+    timeZone:'Africa/Lagos',day:'2-digit',month:'2-digit',
+    hour:'2-digit',minute:'2-digit',hour12:false
+  }).format(new Date(iso))
+}
+function matchPlayers(m){
+  const p=m?.players||{};
+  return {p1:p.p1||p.player1||{},p2:p.p2||p.player2||{}};
+}
+function baseline(m){
+  const {p1,p2}=matchPlayers(m),a=+p1.ranking,b=+p2.ranking;
+  if(!(a>0&&b>0)) return 50;
+  return Math.min(80,52+8*Math.log2(Math.max(a,b)/Math.min(a,b)))
+}
+function tag(base,min){
+  if(base>=min)return['QUALIFIER','qualifier'];
+  if(base>=min-8)return['WATCH','watch'];
+  return['SKIP','skip']
+}
+function sameId(a,b){return a!=null&&b!=null&&String(a)===String(b)}
+function winnerForPlayer(m,playerId){
+  if(m?.outcome && m.outcome!=='completed') return null;
+  const w=num(m?.winner);
+  if(w!==1&&w!==2) return null;
+  const {p1,p2}=matchPlayers(m);
+  if(sameId(p1.id,playerId)) return w===1;
+  if(sameId(p2.id,playerId)) return w===2;
+  return null
+}
+function matchDate(m){return m?.live_at||m?.scheduled_time||m?.event_date||m?.date||null}
+function daysBetween(a,b){
+  const A=Date.parse(a||''),B=Date.parse(b||'');
+  return Number.isFinite(A)&&Number.isFinite(B)?(B-A)/86400000:null
+}
+function scoreSets(m){
+  const candidates=[m?.score?.sets,m?.sets,m?.score?.set_score,m?.set_score];
+  for(const s of candidates){
+    if(Array.isArray(s)&&s.length>=2){
+      const a=num(s[0]),b=num(s[1]);
+      if(a!=null&&b!=null&&a>=0&&b>=0&&a+b>=2)return a+b
+    }
+  }
+  const g=m?.score?.games||m?.games;
+  if(Array.isArray(g)&&Array.isArray(g[0])&&Array.isArray(g[1])){
+    const len=Math.max(g[0].length,g[1].length);
+    if(len>=2&&len<=5)return len
+  }
+  return null
+}
+function isBO3(m){
+  if(m?.format==='BO3')return true;
+  if(m?.format==='BO5')return false;
+  const sc=scoreSets(m); return sc!=null&&sc<=3
+}
+function shrinkPct(wins,total,target=10){
+  if(!total)return null;
+  const raw=wins/total,k=Math.min(1,total/target);
+  return 0.5+(raw-0.5)*k
+}
+function historySummary(rows,playerId,surface,upcomingTime){
+  const valid=[];
+  for(const m of rows||[]){
+    const win=winnerForPlayer(m,playerId);
+    if(win===null)continue;
+    valid.push({...m,_win:win})
+  }
+  const recent=valid.slice(0,10),rw=recent.filter(x=>x._win).length;
+  const recentP=shrinkPct(rw,recent.length,10);
+
+  const surf=valid.filter(x=>surface&&norm(x.surface)===norm(surface)).slice(0,20);
+  const sw=surf.filter(x=>x._win).length;
+  const surfaceP=shrinkPct(sw,surf.length,12);
+
+  const bo3=valid.filter(isBO3).slice(0,20);
+  const bo3WithSets=bo3.map(x=>scoreSets(x)).filter(x=>x===2||x===3);
+  const three=bo3WithSets.filter(x=>x===3).length;
+  const threeRate=bo3WithSets.length?three/bo3WithSets.length:null;
+
+  let last3=0,last7=0;
+  for(const m of valid.slice(0,20)){
+    const d=daysBetween(matchDate(m),upcomingTime);
+    if(d!=null&&d>=0){if(d<=3)last3++;if(d<=7)last7++}
+  }
+  const freshness=clamp(1-0.08*last7-0.10*last3,0.25,1);
+
+  return {
+    recent:{wins:rw,losses:recent.length-rw,n:recent.length,p:recentP},
+    surface:{wins:sw,losses:surf.length-sw,n:surf.length,p:surfaceP},
+    bo3:{sample:bo3WithSets.length,threeSetRate:threeRate,straightRate:bo3WithSets.length?1-threeRate:null},
+    workload:{last3,last7,freshness}
+  }
+}
+function rankProb(r1,r2){
+  r1=num(r1);r2=num(r2);
+  if(!(r1>0&&r2>0))return null;
+  const z=1.25*Math.log(r2/r1);
+  return clamp(1/(1+Math.exp(-z)),0.18,0.82)
+}
+function relativeProb(a,b){
+  if(a==null||b==null)return null;
+  const den=a+b; return den>0?clamp(a/den,0.15,0.85):null
+}
+function h2hInfo(d,currentSurface){
+  const meetings=Array.isArray(d?.meetings)?d.meetings:(Array.isArray(d?.data)?d.data:[]);
+  const clean=meetings.filter(x=>!x?.outcome||x.outcome==='completed');
+  let p1=0,p2=0;
+  for(const m of clean){if(m.winner===1)p1++;else if(m.winner===2)p2++}
+  const total=p1+p2;
+  let p=total?p1/total:null;
+  if(p!=null){const k=Math.min(1,total/5);p=0.5+(p-0.5)*k}
+
+  const surf=clean.filter(x=>norm(x.surface)===norm(currentSurface));
+  let s1=0,s2=0;
+  for(const m of surf){if(m.winner===1)s1++;else if(m.winner===2)s2++}
+  const st=s1+s2;
+  let sp=st?s1/st:null;
+  if(sp!=null){const k=Math.min(1,st/4);sp=0.5+(sp-0.5)*k}
+
+  const bo3scores=[];
+  for(const m of clean){
+    if(m?.format==='BO5')continue;
+    const sets=scoreSets(m);
+    if(sets===2||sets===3)bo3scores.push(sets)
+  }
+  const threeRate=bo3scores.length?bo3scores.filter(x=>x===3).length/bo3scores.length:null;
+  return {p1Wins:p1,p2Wins:p2,n:total,p1Prob:p,surfaceP1Prob:sp,surfaceN:st,threeSetRate:threeRate,threeSetSample:bo3scores.length}
+}
+function fatigueProb(a,b){
+  if(a==null||b==null)return null;
+  return clamp(a/(a+b),0.25,0.75)
+}
+function weightedModel(parts){
+  let w=0,s=0;
+  for(const p of parts){if(p.p==null)continue;w+=p.w;s+=p.w*p.p}
+  return {p:w?s/w:null,coverage:w}
+}
+function analyzeMoneyline(m,s1,s2,h2h){
+  const {p1,p2}=matchPlayers(m);
+  const parts=[
+    {name:'Surface form',w:35,p:relativeProb(s1.surface.p,s2.surface.p)},
+    {name:'Recent form',w:30,p:relativeProb(s1.recent.p,s2.recent.p)},
+    {name:'Ranking',w:15,p:rankProb(p1.ranking,p2.ranking)},
+    {name:'H2H',w:10,p:h2h.surfaceN>=2?h2h.surfaceP1Prob:h2h.p1Prob},
+    {name:'Freshness',w:10,p:fatigueProb(s1.workload.freshness,s2.workload.freshness)}
+  ];
+  const model=weightedModel(parts),p1prob=model.p;
+  if(p1prob==null)return{winner:null,winnerSide:null,prob:null,coverage:0,classification:'SKIP',parts};
+  const side=p1prob>=0.5?1:2,prob=side===1?p1prob:1-p1prob;
+  let classification='SKIP';
+  if(model.coverage>=70&&prob>=0.76)classification='QUALIFIER';
+  else if(model.coverage>=55&&prob>=0.68)classification='WATCH';
+  return {winner:side===1?p1.name:p2.name,winnerSide:side,prob,coverage:model.coverage,classification,p1Probability:p1prob,parts}
+}
+function analyzeTotals(m,s1,s2,h2h,money){
+  if(m?.format==='BO5')return{available:false,reason:'Current match is BO5; this section is only for BO3 totals.'};
+  const rates=[s1.bo3.threeSetRate,s2.bo3.threeSetRate].filter(x=>x!=null);
+  const recentRate=rates.length?rates.reduce((a,b)=>a+b,0)/rates.length:null;
+  const closeness=money?.p1Probability==null?null:1-Math.abs(money.p1Probability-0.5)*2;
+  const closenessRate=closeness==null?null:0.18+0.50*closeness;
+
+  let nume=0,den=0;
+  if(recentRate!=null){nume+=60*recentRate;den+=60}
+  if(h2h.threeSetRate!=null&&h2h.threeSetSample>=2){nume+=15*h2h.threeSetRate;den+=15}
+  if(closenessRate!=null){nume+=25*closenessRate;den+=25}
+  if(!den)return{available:false,reason:'Not enough BO3 history to price total sets.'};
+
+  const over=clamp(nume/den,0.12,0.88),under=1-over;
+  let market='SKIP',prob=Math.max(over,under);
+  if(over>=0.55){market='OVER 2.5 SETS';prob=over}
+  else if(under>=0.58){market='UNDER 2.5 SETS';prob=under}
+  return {available:true,market,prob,overProbability:over,underProbability:under,coverage:den}
+}
+function pct(v){return v==null?'N/A':(100*v).toFixed(1)+'%'}
+function summaryCard(p){
+  const s=p.summary;
+  return `<div class="panel"><b>${esc(p.name)}</b><div class="stats">
+  <div class="stat"><b>${p.ranking??'NR'}</b><span>Current rank</span></div>
+  <div class="stat"><b>${s.recent.wins}-${s.recent.losses}</b><span>Recent completed (${s.recent.n})</span></div>
+  <div class="stat"><b>${pct(s.recent.p)}</b><span>Shrunk recent form</span></div>
+  <div class="stat"><b>${s.surface.wins}-${s.surface.losses}</b><span>Current surface (${s.surface.n})</span></div>
+  <div class="stat"><b>${pct(s.surface.p)}</b><span>Shrunk surface form</span></div>
+  <div class="stat"><b>${s.workload.last3}/${s.workload.last7}</b><span>Matches last 3d / 7d</span></div>
+  </div></div>`
+}
+function verifyMarkup(id,title,prob,target=false){
+  return `<div class="verify"><div class="small">${esc(title)} odds verification</div><div class="verify-grid"><input id="${id}" inputmode="decimal" placeholder="Paste decimal odds e.g. 1.32"><button data-verify="${id}" data-prob="${prob}" data-target="${target?1:0}">VERIFY</button></div><div id="${id}Out" class="status"></div></div>`
+}
+function verifyOdds(id,prob,target){
+  const raw=Number($(id).value),out=$(id+'Out');
+  if(!(raw>1)){out.innerHTML='<span class="bad">Enter valid decimal odds.</span>';return}
+  const implied=1/raw,edge=prob-implied;
+  let verdict='SKIP',cls='bad';
+  if(target&&(raw<1.25||raw>1.40)){verdict='OUTSIDE 1.25–1.40 TARGET';cls='warn'}
+  else if(edge>=0.05){verdict='ARITHMETIC PASS';cls='good'}
+  else if(edge>=0.02){verdict='WATCH';cls='warn'}
+  out.innerHTML=`Model ${pct(prob)} • implied ${pct(implied)} • arithmetic edge ${(edge*100).toFixed(1)} pts • <span class="${cls}">${verdict}</span>`
+}
+function render(){
+  const b=$('matches'),min=+$('min').value;
+  if(!matches.length){b.innerHTML='<div class="small">No upcoming singles found in this window.</div>';return}
+  b.innerHTML=matches.map((m,i)=>{
+    const {p1,p2}=matchPlayers(m),base=baseline(m),t=tag(base,min);
+    return `<div class="match"><div class="badge ${t[1]}">${t[0]}</div>
+    <div class="name">${esc(p1.name)} vs ${esc(p2.name)}</div>
+    <div class="meta">${wat(m.scheduled_time)} WAT • ${esc(m.tournament||'')} • ${esc(m.tier||m.tour||'')} • ${esc(m.surface||'?')} • ${esc(m.format||'?')}<br>
+    Rank ${p1.ranking??'NR'} vs ${p2.ranking??'NR'} • shortlist baseline ${Math.round(base)}/100</div>
+    <div class="row"><button data-i="${i}" class="deep">DEEP ANALYZE</button></div></div>`
+  }).join('');
+  b.querySelectorAll('.deep').forEach(x=>x.onclick=()=>analyze(+x.dataset.i))
+}
+
+async function analyze(i){
+  const m=matches[i],box=$('analysis'),{p1,p2}=matchPlayers(m);
+  box.style.display='block';
+  box.innerHTML='<div class="status">Calculating recent form, surface form, H2H, ranking and workload…</div>';
+  box.scrollIntoView({behavior:'smooth'});
+
+  try{
+    let full=m;
+    try{
+      const md=await api(`/matches/${encodeURIComponent(m.id)}`);
+      full=md.data||md.match||md||m
+    }catch{}
+
+    const fp=matchPlayers(full);
+    const id1=fp.p1?.id||p1.id,id2=fp.p2?.id||p2.id;
+    if(!id1||!id2)throw Error('This fixture does not have stable player IDs yet.');
+
+    const [h1,h2,hh]=await Promise.all([
+      api(`/history/matches?player=${encodeURIComponent(id1)}&draw=singles&limit=50`),
+      api(`/history/matches?player=${encodeURIComponent(id2)}&draw=singles&limit=50`),
+      api(`/h2h?p1=${encodeURIComponent(fp.p1?.name||p1.name)}&p2=${encodeURIComponent(fp.p2?.name||p2.name)}`)
+    ]);
+
+    const s1=historySummary(h1.data||[],id1,full.surface,full.scheduled_time);
+    const s2=historySummary(h2.data||[],id2,full.surface,full.scheduled_time);
+    const h2h=h2hInfo(hh,full.surface);
+    const money=analyzeMoneyline(full,s1,s2,h2h);
+    const totals=analyzeTotals(full,s1,s2,h2h,money);
+
+    const pp1={...(fp.p1||p1),summary:s1},pp2={...(fp.p2||p2),summary:s2};
+    const comp=money.parts.filter(x=>x.p!=null).map(x=>`<tr><td>${esc(x.name)}</td><td>${x.w}%</td><td>${pct(x.p)}</td></tr>`).join('');
+
+    let totalsHtml='';
+    if(totals.available){
+      const chosenProb=totals.market==='OVER 2.5 SETS'?totals.overProbability:
+        totals.market==='UNDER 2.5 SETS'?totals.underProbability:
+        Math.max(totals.overProbability,totals.underProbability);
+      totalsHtml=`<div class="panel"><div class="section-title">2. Total Sets — BO3</div>
+      <div class="result">${esc(totals.market)}</div><div class="bigprob">${pct(chosenProb)}</div>
+      <div class="small">Over 2.5: ${pct(totals.overProbability)} • Under 2.5: ${pct(totals.underProbability)} • arithmetic coverage ${Math.round(totals.coverage)}%</div>
+      ${verifyMarkup('totalOdds','Total Sets',chosenProb,false)}</div>`
+    }else{
+      totalsHtml=`<div class="panel"><div class="section-title">2. Total Sets — BO3</div><div class="bad">${esc(totals.reason)}</div></div>`
+    }
+
+    box.innerHTML=`<div class="small">LiveTennisAPI only • ${esc(full.surface||'?')} • ${esc(full.format||'?')} • ${esc(full.tier||full.tour||'')}</div>
+    <div class="two" style="margin-top:10px">${summaryCard(pp1)}${summaryCard(pp2)}</div>
+    <div class="two" style="margin-top:10px">
+      <div class="panel"><div class="section-title">1. Match Moneyline</div>
+      <div class="result">${esc(money.winner||'NO PICK')} — ${esc(money.classification)}</div>
+      <div class="bigprob">${pct(money.prob)}</div>
+      <div class="small">Model coverage ${Math.round(money.coverage)}% • target odds verification 1.25–1.40</div>
+      ${verifyMarkup('moneyOdds','Moneyline',money.prob,true)}
+      <table><tr><th>Component</th><th>Weight</th><th>P1 lean</th></tr>${comp}</table></div>
+      ${totalsHtml}
+    </div>
+    <div class="small" style="margin-top:10px">H2H ${h2h.p1Wins}-${h2h.p2Wins} (${h2h.n} decided). Missing data lowers coverage instead of being guessed.</div>`;
+
+    box.querySelectorAll('[data-verify]').forEach(btn=>btn.onclick=()=>verifyOdds(btn.dataset.verify,Number(btn.dataset.prob),btn.dataset.target==='1'));
+  }catch(e){
+    box.innerHTML=`<div class="bad">Analysis failed: ${esc(e.message)}</div>
+    <div class="small">Historical form and H2H require the paid history access on the same LiveTennisAPI key.</div>`
+  }
+}
+
+$('scan').onclick=async()=>{
+  const key=$('key').value.trim();
+  if(!key){$('status').innerHTML='<span class="bad">Paste API key.</span>';return}
+  $('scan').disabled=true;$('status').textContent='Scanning…';
+  try{
+    let all=[];
+    const pages=+$('pages').value;
+    for(let i=0;i<pages;i++){
+      const d=await api(`/matches?status=upcoming&draw=singles&limit=100&offset=${i*100}`);
+      all.push(...(d.data||[]));
+      if(!d.meta?.has_more)break
+    }
+    const now=Date.now(),end=now+(+$('hours').value)*3600000;
+    matches=all.filter(m=>{
+      const t=Date.parse(m.scheduled_time||'');
+      return Number.isFinite(t)&&t>now&&t<=end
+    }).sort((a,b)=>baseline(b)-baseline(a)||Date.parse(a.scheduled_time)-Date.parse(b.scheduled_time)).slice(0,10);
+    render();
+    $('status').innerHTML=`<span class="good">Done.</span> ${all.length} loaded • showing best ${matches.length}.`;
+  }catch(e){
+    $('status').innerHTML='<span class="bad">'+esc(e.message)+'</span>'
+  }finally{
+    $('scan').disabled=false
+  }
+};
+})();
+</script>
+</body>
+</html>
