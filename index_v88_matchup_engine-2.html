@@ -1,0 +1,591 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Roman Tennis Scanner V8.10 Matchup Engine</title>
+<style>
+:root{--bg:#0e1117;--card:#171b24;--line:#2b3240;--txt:#f4f7fb;--muted:#9aa6b6;--blue:#3b82f6;--green:#22c55e;--amber:#f59e0b;--red:#ef4444}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+.wrap{max-width:980px;margin:auto;padding:14px}h1{font-size:22px;margin:0 0 4px}.sub,.small{color:var(--muted);font-size:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:12px 0}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}@media(max-width:680px){.grid{grid-template-columns:1fr}}
+label{font-size:12px;color:var(--muted);display:block;margin-bottom:5px}input,select,button{width:100%;font-size:16px;border-radius:10px;border:1px solid var(--line);padding:11px}
+input,select{background:#10141b;color:var(--txt)}button{border:0;background:var(--blue);color:#fff;font-weight:800}button:disabled{opacity:.55}
+.status{margin-top:9px;font-size:13px;color:var(--muted)}.good{color:var(--green)}.warn{color:var(--amber)}.bad{color:var(--red)}
+.match{border-top:1px solid var(--line);padding:13px 0}.match:first-child{border-top:0}.leanbox{margin-top:9px;padding:10px;border-radius:10px;background:#11161e;border:1px solid var(--line)}.leanscore{font-size:22px;font-weight:900}.leanname{font-size:16px;font-weight:900}.components{margin-top:8px;display:grid;grid-template-columns:1fr 1fr;gap:6px}.comp{background:#171d27;border:1px solid var(--line);border-radius:8px;padding:7px}.comp b{display:block;font-size:13px}.comp span{font-size:10px;color:var(--muted)}.name{font-weight:850}.meta{color:var(--muted);font-size:12px;line-height:1.55}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.row button{width:auto;padding:8px 10px;font-size:13px}
+.badge{display:inline-block;font-size:11px;font-weight:900;margin-bottom:6px}.qualifier{color:#64e48b}.watch{color:#f8bd55}.skip{color:#ff7c7c}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:10px}@media(max-width:720px){.two{grid-template-columns:1fr}}
+.panel{background:#11161e;border:1px solid var(--line);border-radius:13px;padding:12px}.section-title{font-size:16px;font-weight:900}
+.result{font-size:20px;font-weight:900;margin:8px 0}.bigprob{font-size:30px;font-weight:900}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:9px}.stat{background:#171d27;border:1px solid var(--line);border-radius:9px;padding:8px}.stat b{display:block}.stat span{font-size:10px;color:var(--muted)}
+table{width:100%;border-collapse:collapse;margin-top:8px;font-size:12px}td,th{padding:7px;border-bottom:1px solid var(--line);text-align:left}
+.notice{margin-top:10px;padding:9px;border-radius:9px;background:#10141b;color:var(--muted);font-size:11px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Roman Tennis Scanner V8.10 — Matchup Engine</h1>
+<div class="sub">Match winner • serve-vs-return matchup engine • highest qualifying lean first • scores are not win probabilities</div>
+
+<div class="card">
+  <div class="grid">
+    <div><label>LiveTennisAPI Basic key</label><input id="key" type="password" placeholder="Paste Basic API key"></div>
+    <div><label>Window</label><select id="hours"><option>1</option><option selected>2</option><option>3</option></select></div>
+    <div><label>Fixture pages</label><select id="pages"><option value="1" selected>1 page</option><option value="2">2 pages</option></select></div>
+    <div><label>Matches to analyze</label><select id="maxMatches"><option>3</option><option selected>5</option><option>10</option></select></div>
+  </div>
+  <button id="scan" style="margin-top:10px">SCAN NOW</button>
+  <div id="status" class="status"></div>
+</div>
+
+<div id="highest" class="card">Scan to find the highest current lean.</div>
+<div class="notice">Each match uses up to 5 analysis requests, plus fixture loading and rechecking. Matchup uses available career aggregates, not verified current-surface statistics. Fields ending in _pct use 0–100; _ratio uses 0–1. Ambiguous rate fields are skipped. Coverage measures available evidence, not accuracy or sample freshness.</div>
+<div id="matches" class="card"><div class="small">No scan yet.</div></div>
+</div>
+
+<script>
+(()=>{
+const API='https://api.livetennisapi.com/api/public/v1';
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
+const num=v=>{if(v===null||v===undefined||!['number','string'].includes(typeof v))return null;if(typeof v==='string'&&!v.trim())return null;const x=Number(v);return Number.isFinite(x)?x:null};
+const norm=s=>String(s||'').trim().toLowerCase();
+
+// Units follow the field name: _pct is 0..100; _ratio is 0..1.
+// Ambiguous _rate aliases are skipped until the provider's schema is verified.
+function pctValue(v,unit){
+  if(typeof v==='boolean'||typeof v==='object')return null;
+  const x=num(v);if(x==null||x<0)return null;
+  if(unit==='percent')return x<=100?x/100:null;
+  if(unit==='ratio')return x<=1?x:null;
+  return null;
+}
+function readMetric(obj,fields){
+  for(const [key,unit] of fields){
+    const value=deepFind(obj,[key]),parsed=pctValue(value,unit);
+    if(parsed!=null)return parsed;
+  }
+  return null;
+}
+function countValue(v){
+  const x=num(v);
+  return x!=null&&x>=0?x:null
+}
+
+let matches=[],results=[],requestCount=0,cache=new Map(),scanKey="",lastVerified=0,scanning=false;
+
+function headers(){const key=scanKey||$('key').value.trim();return {'X-API-Key':key,'Authorization':'Bearer '+key,'Accept':'application/json'}}
+async function api(path,soft=false){
+  if(!cache.has(path))cache.set(path,(async()=>{
+    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);
+    requestCount++;
+    try{
+      const r=await fetch(API+path,{headers:headers(),signal:controller.signal});
+      let d;try{d=await r.json()}catch{throw Error('Invalid API response (HTTP '+r.status+').')}
+      if(!r.ok){const e=Error(r.status===429?'API rate limit reached. Wait before scanning again.':String(d?.detail||d?.message||d?.error||('API '+r.status)));e.status=r.status;throw e}
+      return d;
+    }catch(e){if(e.name==='AbortError')throw Error('API request timed out after 15 seconds.');throw e}
+    finally{clearTimeout(timer)}
+  })());
+  try{return await cache.get(path)}catch(e){if(soft&&e.status!==429)return null;throw e}
+}
+function fixtureKey(m){const {p1,p2}=matchPlayers(m);return String(m.id||m.match_id||[p1.id,p2.id,m.scheduled_time].join('|'))}
+function upcoming(m,now=Date.now()){
+  const t=Date.parse(m.scheduled_time||'');
+  const status=norm(m.status),outcome=norm(m.outcome);
+  return Number.isFinite(t)&&t>now&&!badCompletion(m)&&(!status||['upcoming','scheduled','not_started','not started'].includes(status))&&(!outcome||['upcoming','scheduled','not_started','not started'].includes(outcome))&&![1,2].includes(num(m.winner));
+}
+async function loadFixtures(pages){
+  let all=[];
+  for(let i=0;i<pages;i++){
+    const path=`/matches?status=upcoming&draw=singles&limit=100&offset=${i*100}`;
+    cache.delete(path);
+    const d=await api(path);
+    if(!Array.isArray(d.data))throw Error('Unexpected fixture response: data must be an array.');
+    all.push(...d.data);if(!d.meta?.has_more)break;
+  }
+  return [...new Map(all.map(m=>[fixtureKey(m),m])).values()];
+}
+function classRank(c){return c==='STRONG'?3:c==='PLAY'?2:c==='WATCH'?1:0}
+function topCandidates(){
+  return results.filter(r=>r.verified&&upcoming(r.match)&&r.money.score!=null&&r.money.coverage>=55)
+    .sort((a,b)=>b.money.score-a.money.score||b.money.coverage-a.money.coverage||Date.parse(a.match.scheduled_time)-Date.parse(b.match.scheduled_time))
+}
+function renderHighest(){
+  const el=$('highest');
+  if(scanning){el.innerHTML='<b>Checking current leans…</b><div class="small">Results will be ranked after the final schedule check.</div>';return}
+  if(!lastVerified){el.innerHTML='<b>SKIP — no verified current result.</b>';return}
+  if(Date.now()-lastVerified>120000){el.innerHTML='<b>SKIP — scan is older than 2 minutes. Scan again.</b>';return}
+  const ranked=topCandidates(),qualified=ranked.filter(r=>['PLAY','STRONG'].includes(r.money.classification));
+  const best=qualified[0]||ranked[0];
+  if(!best){el.innerHTML='<b>SKIP — no current result has sufficient data.</b><div class="small">At least 55% weighted coverage is required to display a top lean. Check missing inputs below.</div>';return}
+  const m=best.match,x=best.money,{p1,p2}=matchPlayers(m),ok=qualified.length>0;
+  el.innerHTML=`<div class="section-title">Highest current ${ok?'qualifying lean':'lean — SKIP'}</div>
+    <div class="result ${ok?'good':'warn'}">${esc(x.winner)} — Match winner</div>
+    <div class="leanscore">${(x.score*100).toFixed(1)}/100 • ${esc(x.classification)}</div>
+    <div>${esc(p1.name)} vs ${esc(p2.name)}</div>
+    <div class="small">${wat(m.scheduled_time)} WAT • coverage ${Math.round(x.coverage)}% • checked ${wat(new Date(lastVerified).toISOString())} WAT</div>
+    <div class="notice">${ok?'Highest score among qualifying matches successfully analyzed in this scan.':'No match meets the model thresholds. This is the highest available lean, not a qualifying pick.'} Model score is not a win probability; thresholds are unvalidated.</div>`;
+}
+function wat(iso){return new Intl.DateTimeFormat('en-GB',{timeZone:'Africa/Lagos',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(iso))}
+function matchPlayers(m){const p=m?.players||{};return{p1:p.p1||p.player1||{},p2:p.p2||p.player2||{}}}
+function baseline(m){
+  const {p1,p2}=matchPlayers(m),a=num(p1.ranking),b=num(p2.ranking);
+  let score=50;
+  if(a>0&&b>0){
+    const gap=Math.abs(Math.log2(a/b));
+    score+=Math.min(18,6*gap);
+    const balanced=Math.min(a,b)/Math.max(a,b);
+    if(balanced>=0.65)score+=6;
+    if(Math.min(a,b)<=50)score+=4;
+  }
+  if(norm(m.surface))score+=4;
+  if(norm(m.format)==='bo3')score+=2;
+  return clamp(score,0,80)
+}
+function tag(base,min){if(base>=min)return['QUALIFIER','qualifier'];if(base>=min-8)return['WATCH','watch'];return['SKIP','skip']}
+function sameId(a,b){return a!=null&&b!=null&&String(a)===String(b)}
+function badCompletion(m){
+  const blob=norm([m?.outcome,m?.status,m?.result,m?.score,m?.notes].filter(Boolean).join(' '));
+  const tokens=blob.split(/[^a-z0-9/]+/).filter(Boolean);
+  return tokens.some(t=>['ret','retired','walkover','wo','w/o','default','def','cancel','cancelled','canceled','abandon','abandoned'].includes(t))
+}
+function winnerForPlayer(m,playerId){
+  if(badCompletion(m))return null;
+  if(m?.outcome && norm(m.outcome)!=='completed')return null;
+  const w=num(m?.winner);if(w!==1&&w!==2)return null;
+  const {p1,p2}=matchPlayers(m);
+  if(sameId(p1.id,playerId))return w===1;
+  if(sameId(p2.id,playerId))return w===2;
+  return null
+}
+function matchDate(m){return m?.live_at||m?.scheduled_time||m?.event_date||m?.date||null}
+function daysBetween(a,b){const A=Date.parse(a||''),B=Date.parse(b||'');return Number.isFinite(A)&&Number.isFinite(B)?(B-A)/86400000:null}
+function scoreSets(m){
+  const candidates=[m?.score?.sets,m?.sets,m?.score?.set_score,m?.set_score];
+  for(const s of candidates){
+    if(Array.isArray(s)&&s.length>=2){
+      const a=num(s[0]),b=num(s[1]);if(a!=null&&b!=null&&a>=0&&b>=0&&a+b>=2)return a+b
+    }
+  }
+  const g=m?.score?.games||m?.games;
+  if(Array.isArray(g)&&Array.isArray(g[0])&&Array.isArray(g[1])){
+    const len=Math.max(g[0].length,g[1].length);if(len>=2&&len<=5)return len
+  }
+  if(typeof m?.score==='string'){
+    const parts=m.score.split(/\s+/).filter(x=>/\d/.test(x)&&!/(RET|W\/O|DEF)/i.test(x));
+    if(parts.length>=2&&parts.length<=5)return parts.length
+  }
+  return null
+}
+function isBO3(m){if(m?.format==='BO3')return true;if(m?.format==='BO5')return false;const sc=scoreSets(m);return sc!=null&&sc<=3}
+function shrinkPct(wins,total,target=10){if(!total)return null;const raw=wins/total,k=Math.min(1,total/target);return 0.5+(raw-0.5)*k}
+function tookSet(m,playerId){
+  if(!isBO3(m))return null;
+  const win=winnerForPlayer(m,playerId),sets=scoreSets(m);
+  if(win===null||sets==null)return null;
+  if(win)return true;
+  return sets===3
+}
+function oppRankForPlayer(m,playerId){
+  const {p1,p2}=matchPlayers(m);
+  if(sameId(p1.id,playerId))return num(p2.ranking);
+  if(sameId(p2.id,playerId))return num(p1.ranking);
+  return null
+}
+function qualityAdjustedWin(m,playerId){
+  const win=winnerForPlayer(m,playerId);if(win===null)return null;
+  const opp=oppRankForPlayer(m,playerId);
+  // Bounded heuristic: stronger opposition raises either outcome's score.
+  // Wins always exceed losses; unknown rank uses a neutral adjustment.
+  const strength=opp>0?1/(1+opp/100):0.5;
+  return win?0.75+0.25*strength:0.25*strength;
+}
+function weightedForm(rows,playerId){
+  let sum=0,den=0,squared=0,used=0;
+  rows.forEach((m,i)=>{
+    const adj=qualityAdjustedWin(m,playerId);if(adj==null)return;
+    const w=Math.pow(0.90,i);sum+=w*adj;den+=w;squared+=w*w;used++;
+  });
+  if(!used)return {p:null,n:0,q:0};
+  const effectiveN=den*den/squared,q=Math.min(1,effectiveN/10);
+  return {p:0.5+(sum/den-0.5)*q,n:used,q};
+}
+function historySummary(rows,playerId,surface,upcomingTime){
+  const cutoff=Date.parse(upcomingTime||'');
+  const valid=[];
+  for(const m of rows||[]){
+    const t=Date.parse(matchDate(m)||'');
+    if(!Number.isFinite(t)||!Number.isFinite(cutoff)||t>=Math.min(cutoff,Date.now())||Math.min(cutoff,Date.now())-t>365*86400000)continue;
+    const win=winnerForPlayer(m,playerId);if(win===null)continue;
+    valid.push({...m,_win:win})
+  }
+  valid.sort((a,b)=>(Date.parse(matchDate(b)||'')||0)-(Date.parse(matchDate(a)||'')||0));
+
+  const recent=valid.slice(0,10),rw=recent.filter(x=>x._win).length;
+  const recentAdj=weightedForm(recent,playerId);
+  const surf=valid.filter(x=>surface&&norm(x.surface)===norm(surface)).slice(0,20),sw=surf.filter(x=>x._win).length;
+  const surfaceAdj=weightedForm(surf,playerId);
+
+  let last3=0,last7=0,dated=0;
+  for(const m of valid.slice(0,20)){
+    const d=daysBetween(matchDate(m),upcomingTime);
+    if(d!=null&&d>=0){dated++;if(d<=3)last3++;if(d<=7)last7++}
+  }
+  const freshness=clamp(1-0.08*last7-0.10*last3,0.25,1);
+  return {
+    recent:{wins:rw,losses:recent.length-rw,n:recent.length,p:recentAdj.p,q:recentAdj.q},
+    surface:{wins:sw,losses:surf.length-sw,n:surf.length,p:surfaceAdj.p,q:surfaceAdj.q},
+    workload:{last3,last7,freshness,q:Math.min(1,dated/8)}
+  }
+}
+function deepFind(obj,keys){
+  const wanted=keys.map(x=>x.toLowerCase()),seen=new Set(),stack=[obj];
+  while(stack.length){
+    const x=stack.pop();
+    if(!x||typeof x!=='object'||seen.has(x))continue;seen.add(x);
+    for(const[k,v]of Object.entries(x)){
+      if(wanted.includes(k.toLowerCase())){const z=num(v);if(z!=null)return z}
+      if(v&&typeof v==='object')stack.push(v)
+    }
+  }
+  return null
+}
+function archiveSurfaceInfo(career,surface){
+  if(!career)return {p:null,n:0,q:0};
+  const s=norm(surface);
+  let names=null;
+  if(s.includes('clay')) names=['clay'];
+  else if(s.includes('grass')) names=['grass'];
+  else if(s.includes('hard')) names=['hard','hardcourt'];
+  else return {p:null,n:0,q:0};
+
+  const r=career.record||career.data?.record||career;
+  let block=null;
+  for(const k of names){if(r?.by_surface?.[k])block=r.by_surface[k];if(r?.surface?.[k])block=r.surface[k]}
+  if(!block){
+    const all=Object.entries(r?.by_surface||r?.surface||{});
+    const hit=all.find(([k])=>names.some(n=>norm(k).includes(n)));if(hit)block=hit[1]
+  }
+  if(!block)return {p:null,n:0,q:0};
+  const w=deepFind(block,['wins','w']),l=deepFind(block,['losses','l']);
+  if(w==null||l==null||w+l<=0)return {p:null,n:0,q:0};
+  const n=w+l;
+  return {p:w/n,n,q:Math.min(1,n/30)}
+}
+function archiveSurfacePct(career,surface){return archiveSurfaceInfo(career,surface).p}
+function serveReturnQuality(career){
+  if(!career)return {
+    serve:null,ret:null,serveQ:0,retQ:0,
+    firstServeWon:null,secondServeWon:null,
+    firstReturnWon:null,secondReturnWon:null,
+    hold:null,breakRate:null,breakConversion:null,
+    aceRate:null,doubleFaultRate:null
+  };
+  const root=career.data||career;
+  const s=root.serve||root.serving||{};
+  const r=root.return||root.returning||{};
+
+  const fsw=readMetric(s,[['first_serve_points_won_pct','percent'],['first_serve_won_pct','percent'],['first_serve_points_won_ratio','ratio']]);
+  const ssw=readMetric(s,[['second_serve_points_won_pct','percent'],['second_serve_won_pct','percent'],['second_serve_points_won_ratio','ratio']]);
+  const hold=readMetric(s,[['hold_pct','percent'],['service_games_won_pct','percent'],['service_games_won_ratio','ratio']]);
+  const ace=readMetric(s,[['ace_pct','percent'],['aces_per_service_point','ratio']]);
+  const df=readMetric(s,[['double_fault_pct','percent'],['double_faults_per_service_point','ratio']]);
+
+  let sv=[],sw=[];
+  if(fsw!=null){sv.push(fsw);sw.push(35)}
+  if(ssw!=null){sv.push(ssw);sw.push(30)}
+  if(hold!=null){sv.push(hold);sw.push(25)}
+  if(ace!=null){sv.push(clamp(0.5+ace*1.5,0.45,0.75));sw.push(5)}
+  if(df!=null){sv.push(clamp(0.65-df,0.35,0.70));sw.push(5)}
+  let serve=null;
+  if(sv.length){
+    let a=0,w=0;sv.forEach((v,i)=>{a+=v*sw[i];w+=sw[i]});
+    serve=clamp(a/w,0.25,0.85)
+  }
+
+  const fr=readMetric(r,[['first_serve_return_points_won_pct','percent'],['first_serve_return_won_pct','percent'],['first_serve_return_points_won_ratio','ratio']]);
+  const sr=readMetric(r,[['second_serve_return_points_won_pct','percent'],['second_serve_return_won_pct','percent'],['second_serve_return_points_won_ratio','ratio']]);
+  const brk=readMetric(r,[['return_games_won_pct','percent'],['return_games_won_ratio','ratio']]);
+  const breakConversion=readMetric(r,[['break_points_converted_pct','percent'],['break_points_won_pct','percent'],['break_points_converted_ratio','ratio']]);
+  let rv=[],rw=[];
+  if(fr!=null){rv.push(fr);rw.push(35)}
+  if(sr!=null){rv.push(sr);rw.push(35)}
+  if(brk!=null){rv.push(brk);rw.push(30)}
+  let ret=null;
+  if(rv.length){
+    let a=0,w=0;rv.forEach((v,i)=>{a+=v*rw[i];w+=rw[i]});
+    ret=clamp(a/w,0.15,0.70)
+  }
+
+  return {
+    serve,ret,
+    serveQ:sv.length?Math.min(1,sv.length/3):0,
+    retQ:rv.length?Math.min(1,rv.length/3):0,
+    firstServeWon:fsw,secondServeWon:ssw,
+    firstReturnWon:fr,secondReturnWon:sr,
+    hold,breakRate:brk,breakConversion,
+    aceRate:ace,doubleFaultRate:df
+  }
+}
+function serveQuality(career){return serveReturnQuality(career).serve}
+function returnQuality(career){return serveReturnQuality(career).ret}
+
+function oneWayMatchup(server,returner){
+  const parts=[];
+  const add=(a,b,w)=>{if(a!=null&&b!=null&&Number.isFinite(a)&&Number.isFinite(b))parts.push({p:(a+1-b)/2,w})};
+  // Increasing opponent return strength must lower the server's score.
+  // Keep point-level and game-level inputs explicit; no composite reuse.
+  add(server.firstServeWon,returner.firstReturnWon,35);
+  add(server.secondServeWon,returner.secondReturnWon,30);
+  add(server.hold,returner.breakRate,25);
+  const w=parts.reduce((n,x)=>n+x.w,0);
+  return {p:w?parts.reduce((n,x)=>n+x.p*x.w,0)/w:null,q:w/90};
+}
+function serveReturnMatchup(a,b){
+  const aServe=oneWayMatchup(a,b),bServe=oneWayMatchup(b,a);
+  // Both directions need the same metrics for a comparable score.
+  const shared={...a},other={...b};
+  for(const [serve,ret] of [['firstServeWon','firstReturnWon'],['secondServeWon','secondReturnWon'],['hold','breakRate']]){
+    if([a[serve],a[ret],b[serve],b[ret]].some(v=>v==null)){
+      shared[serve]=shared[ret]=other[serve]=other[ret]=null;
+    }
+  }
+  const x=oneWayMatchup(shared,other),y=oneWayMatchup(other,shared);
+  if(x.p==null||y.p==null)return {p:null,q:0,aServe:aServe.p,bServe:bServe.p};
+  return {p:clamp(0.5+(x.p-y.p)*0.95,0.20,0.80),q:Math.min(x.q,y.q),aServe:x.p,bServe:y.p};
+}
+function rankProb(r1,r2){
+  r1=num(r1);r2=num(r2);if(!(r1>0&&r2>0))return null;
+  const z=1.20*Math.log(r2/r1);return clamp(1/(1+Math.exp(-z)),0.18,0.82)
+}
+function relativeProb(a,b){if(a==null||b==null)return null;const den=a+b;return den>0?clamp(a/den,0.15,0.85):null}
+function h2hInfo(d,currentSurface,currentP1,currentP2,upcomingTime){
+  const meetings=Array.isArray(d?.meetings)?d.meetings:(Array.isArray(d?.data)?d.data:[]);
+  const cutoff=Date.parse(upcomingTime||'');
+  const clean=meetings.filter(m=>{
+    if(badCompletion(m))return false;
+    if(m?.outcome&&norm(m.outcome)!=='completed')return false;
+    const t=Date.parse(matchDate(m)||'');
+    if(!Number.isFinite(t)||!Number.isFinite(cutoff)||t>=Math.min(cutoff,Date.now()))return false;
+    return true
+  });
+  function currentWinnerSide(m){
+    const {p1,p2}=matchPlayers(m),w=num(m?.winner);
+    if(w!==1&&w!==2)return null;
+    const winner=w===1?p1:p2,loser=w===1?p2:p1;
+    const n1=norm(currentP1?.name),n2=norm(currentP2?.name);
+    if(sameId(winner.id,currentP1?.id)||norm(winner.name)===n1)return 1;
+    if(sameId(winner.id,currentP2?.id)||norm(winner.name)===n2)return 2;
+    if(sameId(loser.id,currentP1?.id)||norm(loser.name)===n1)return 2;
+    if(sameId(loser.id,currentP2?.id)||norm(loser.name)===n2)return 1;
+    return null
+  }
+  let p1=0,p2=0,used=0;
+  for(const m of clean){const s=currentWinnerSide(m);if(s===1){p1++;used++}else if(s===2){p2++;used++}}
+  let p=used?p1/used:null;if(p!=null){const k=Math.min(1,used/5);p=0.5+(p-0.5)*k}
+  const surf=clean.filter(x=>currentSurface&&norm(x.surface)===norm(currentSurface));
+  let s1=0,s2=0,sused=0;
+  for(const m of surf){const s=currentWinnerSide(m);if(s===1){s1++;sused++}else if(s===2){s2++;sused++}}
+  let sp=sused?s1/sused:null;if(sp!=null){const k=Math.min(1,sused/4);sp=0.5+(sp-0.5)*k}
+  return{p1Wins:p1,p2Wins:p2,n:used,p1Prob:p,surfaceP1Prob:sp,surfaceN:sused}
+}
+function fatigueProb(a,b){if(a==null||b==null)return null;return clamp(a/(a+b),0.25,0.75)}
+function weighted(parts){
+  let nominal=0,used=0,sum=0;
+  for(const p of parts){
+    nominal+=p.w;
+    if(p.p==null)continue;
+    const q=clamp(p.q==null?1:p.q,0,1);
+    const ew=p.w*q;
+    used+=ew;
+    sum+=ew*p.p
+  }
+  return{p:used?sum/used:null,coverage:nominal?100*used/nominal:0}
+}
+function analyzeMoneyline(m,s1,s2,h2h,c1,c2){
+  const {p1,p2}=matchPlayers(m);
+  const aSurfI=archiveSurfaceInfo(c1,m.surface),bSurfI=archiveSurfaceInfo(c2,m.surface);
+  const aSR=serveReturnQuality(c1),bSR=serveReturnQuality(c2);
+  const matchup=serveReturnMatchup(aSR,bSR);
+  const h2hN=h2h.surfaceN>=2?h2h.surfaceN:h2h.n;
+
+  const parts=[
+    {name:'Opponent-adjusted surface',w:28,p:relativeProb(s1.surface.p,s2.surface.p),q:Math.min(s1.surface.q,s2.surface.q)},
+    {name:'Opponent-adjusted recent',w:18,p:relativeProb(s1.recent.p,s2.recent.p),q:Math.min(s1.recent.q,s2.recent.q)},
+    {name:'Serve-return matchup',w:22,p:matchup.p,q:matchup.q},
+    {name:'Career surface',w:8,p:relativeProb(aSurfI.p,bSurfI.p),q:Math.min(aSurfI.q,bSurfI.q)},
+    {name:'Serve quality',w:6,p:relativeProb(aSR.serve,bSR.serve),q:Math.min(aSR.serveQ,bSR.serveQ)},
+    {name:'Return quality',w:6,p:relativeProb(aSR.ret,bSR.ret),q:Math.min(aSR.retQ,bSR.retQ)},
+    {name:'Ranking',w:6,p:rankProb(p1.ranking,p2.ranking),q:(num(p1.ranking)>0&&num(p2.ranking)>0)?1:0},
+    {name:'H2H',w:3,p:h2h.surfaceN>=2?h2h.surfaceP1Prob:h2h.p1Prob,q:Math.min(1,(h2hN||0)/5)},
+    {name:'Freshness',w:3,p:fatigueProb(s1.workload.freshness,s2.workload.freshness),q:Math.min(s1.workload.q,s2.workload.q)}
+  ];
+
+  const model=weighted(parts),p1score=model.p;
+  if(p1score==null)return{winner:null,score:null,coverage:0,classification:'SKIP',p1Score:null,parts,matchup};
+
+  const side=p1score>=0.5?1:2,score=side===1?p1score:1-p1score;
+  let classification='SKIP';
+  if(model.coverage>=78&&score>=0.76)classification='STRONG';
+  else if(model.coverage>=65&&score>=0.68)classification='PLAY';
+  else if(model.coverage>=55&&score>=0.62)classification='WATCH';
+
+  return{
+    winner:side===1?p1.name:p2.name,
+    winnerSide:side,
+    score,coverage:model.coverage,classification,p1Score:p1score,parts,matchup
+  }
+}
+
+function pct(v){return v==null?'N/A':(100*v).toFixed(1)+'%'}
+function summaryCard(p,career){
+  const s=p.summary,cs=archiveSurfacePct(career,p.currentSurface),sr=serveReturnQuality(career);
+  return `<div class="panel"><b>${esc(p.name)}</b><div class="stats">
+    <div class="stat"><b>${p.ranking??'NR'}</b><span>Current rank</span></div>
+    <div class="stat"><b>${s.recent.wins}-${s.recent.losses}</b><span>Recent W-L (${s.recent.n})</span></div>
+    <div class="stat"><b>${pct(s.surface.p)}</b><span>Opponent-adjusted surface</span></div>
+    <div class="stat"><b>${pct(cs)}</b><span>Career surface</span></div>
+    <div class="stat"><b>${pct(sr.firstServeWon)}</b><span>Career 1st serve points won</span></div>
+    <div class="stat"><b>${pct(sr.secondServeWon)}</b><span>Career 2nd serve points won</span></div>
+    <div class="stat"><b>${pct(sr.firstReturnWon)}</b><span>Career 1st return points won</span></div>
+    <div class="stat"><b>${pct(sr.secondReturnWon)}</b><span>Career 2nd return points won</span></div>
+    <div class="stat"><b>${pct(sr.hold)}</b><span>Hold / service games won</span></div>
+    <div class="stat"><b>${pct(sr.breakRate)}</b><span>Return games won</span></div>
+    <div class="stat"><b>${pct(sr.breakConversion)}</b><span>Break-point conversion (display only)</span></div>
+    <div class="stat"><b>${pct(sr.serve)}</b><span>Serve quality</span></div>
+    <div class="stat"><b>${pct(sr.ret)}</b><span>Return quality</span></div>
+    <div class="stat"><b>${s.workload.last3}/${s.workload.last7}</b><span>Matches last 3d / 7d</span></div>
+  </div></div>`
+}
+function tacticalStats(v){
+  const keys=['setups','weak','approaches','netWins','linePasses'];
+  const n={};
+  for(const k of keys){const raw=v[k];if(raw===''||raw==null)return {error:'Enter all five counts, including zero where observed.'};n[k]=num(raw);if(n[k]==null||!Number.isSafeInteger(n[k])||n[k]<0)return {error:'Counts must be non-negative whole numbers.'}}
+  if(n.weak>n.setups||n.approaches>n.setups||n.netWins>n.approaches||n.linePasses>n.approaches-n.netWins)return {error:'Check counts: replies and approaches cannot exceed setups; net wins plus down-the-line passing losses cannot exceed approaches.'};
+  return {...n,replyRate:n.setups?n.weak/n.setups:null,netRate:n.approaches?n.netWins/n.approaches:null,passRate:n.approaches?n.linePasses/n.approaches:null};
+}
+function tacticalPanel(m,i){
+  const {p1,p2}=matchPlayers(m);
+  return `<details class="notice"><summary>Tactical observations — optional manual input</summary>
+    <p>Deep crosscourt forehand into a weaker backhand: record observed points where this pattern was attempted. A weak reply may create an approach opportunity; the down-the-line passing lane can remain open.</p>
+    <label>Observed player</label><select id="tPlayer_${i}"><option value="1">${esc(p1.name)}</option><option value="2">${esc(p2.name)}</option></select>
+    <label>Observation source / match / date</label><input id="tSource_${i}" placeholder="e.g. video vs opponent, date, set">
+    <label>Weaker backhand established by observation?</label><select id="tBackhand_${i}"><option value="unknown">Unknown</option><option value="yes">Yes — observed</option><option value="no">No</option></select>
+    <div class="grid">${[['setups','Deep crosscourt setups attempted'],['weak','Setups producing a weak reply'],['approaches','Setups followed by an approach'],['netWins','Points won after those approaches'],['linePasses','Approaches lost to a down-the-line pass']].map(([k,label])=>`<div><label>${label}</label><input id="t_${i}_${k}" type="number" min="0" step="1" inputmode="numeric" placeholder="Observed count"></div>`).join('')}</div>
+    <button type="button" id="tCalc_${i}" style="margin-top:8px">CALCULATE TACTICAL RATES</button><div id="tResult_${i}" class="status">No observations entered.</div>
+    <p>These are descriptive rates from your observations, not proof of improvement or match-win probabilities. Compare with a comparable baseline before claiming an advantage. Main lean and coverage are unchanged. Inputs reset on a new scan.</p>
+  </details>`;
+}
+function calculateTactic(i){
+  const out=$('tResult_'+i),source=$('tSource_'+i).value.trim();
+  if(!source){out.textContent='Add the observation source, match and date.';return}
+  const values={};for(const k of ['setups','weak','approaches','netWins','linePasses'])values[k]=$(`t_${i}_${k}`).value;
+  const r=tacticalStats(values);if(r.error){out.textContent=r.error;return}
+  const p=matchPlayers(matches[i])[$('tPlayer_'+i).value==='1'?'p1':'p2'];
+  const note=$('tBackhand_'+i).value==='yes'?'Weaker-backhand premise marked observed.':'Weaker-backhand premise is not established.';
+  out.textContent=`${p.name} • ${source} • Weak replies: ${r.weak}/${r.setups} (${pct(r.replyRate)}). Points won after approaches: ${r.netWins}/${r.approaches} (${pct(r.netRate)}). Down-the-line passing losses: ${r.linePasses}/${r.approaches} (${pct(r.passRate)}). ${note} Observational evidence only; no score adjustment.`;
+}
+function render(){
+  const b=$('matches');
+  if(!matches.length){b.innerHTML='<div class="small">No upcoming singles found in this window.</div>';return}
+  b.innerHTML=matches.map((m,i)=>{
+    const {p1,p2}=matchPlayers(m),base=baseline(m);
+    return `<div class="match" id="match_${i}">
+      <div id="auto_${i}" class="leanbox"><div class="small">Calculating full lean…</div></div>
+      <div class="small" style="margin-top:8px">Shortlist priority only — not a prediction</div>
+      <div class="name">${esc(p1.name)} vs ${esc(p2.name)}</div>
+      <div class="meta">${wat(m.scheduled_time)} WAT • ${esc(m.tournament||'')} • ${esc(m.tier||m.tour||'')} • ${esc(m.surface||'?')} • ${esc(m.format||'?')}<br>
+      Rank ${p1.ranking??'NR'} vs ${p2.ranking??'NR'} • shortlist baseline ${Math.round(base)}/100</div>
+      ${tacticalPanel(m,i)}
+    </div>`
+  }).join('');
+  matches.forEach((m,i)=>{ $('tCalc_'+i).onclick=()=>calculateTactic(i); for(const id of ['tPlayer_','tSource_','tBackhand_'])$(''+id+i).oninput=()=>{$('tResult_'+i).textContent='Inputs changed — recalculate.'}; for(const k of ['setups','weak','approaches','netWins','linePasses'])$(`t_${i}_${k}`).oninput=()=>{$('tResult_'+i).textContent='Inputs changed — recalculate.'}; });
+}
+async function analyze(i){
+  const full=matches[i],box=$('auto_'+i),{p1,p2}=matchPlayers(full);
+  if(!box)return 'failed';
+  if(!upcoming(full)){box.innerHTML='<b>SKIP — fixture is no longer upcoming.</b>';return 'skipped'}
+  box.innerHTML='<div class="small">Running BASIC-max analysis…</div>';
+  try{
+    if(!p1.id||!p2.id)throw Error('This fixture does not have stable player IDs yet.');
+
+    // 5 analysis calls total: two recent histories, H2H, and two archive-career summaries.
+    // Career calls are soft: if a modern player has no pre-2023 archive career, the model simply lowers coverage.
+    const [h1,h2,hh,c1,c2]=await Promise.all([
+      api(`/history/matches?player=${encodeURIComponent(p1.id)}&draw=singles&limit=50`),
+      api(`/history/matches?player=${encodeURIComponent(p2.id)}&draw=singles&limit=50`),
+      api(`/h2h?p1=${encodeURIComponent(p1.name)}&p2=${encodeURIComponent(p2.name)}`),
+      api(`/history/archive/career?name=${encodeURIComponent(p1.name)}`,true),
+      api(`/history/archive/career?name=${encodeURIComponent(p2.name)}`,true)
+    ]);
+
+    if(!Array.isArray(h1?.data)||!Array.isArray(h2?.data))throw Error('Invalid player history response.');
+    const s1=historySummary(h1.data||[],p1.id,full.surface,full.scheduled_time);
+    const s2=historySummary(h2.data||[],p2.id,full.surface,full.scheduled_time);
+    const h2h=h2hInfo(hh,full.surface,p1,p2,full.scheduled_time);
+    const money=analyzeMoneyline(full,s1,s2,h2h,c1,c2);
+
+    const pp1={...p1,summary:s1,currentSurface:full.surface},pp2={...p2,summary:s2,currentSurface:full.surface};
+    results.push({match:full,money,verified:false});
+    const comps=money.parts.filter(x=>x.p!=null).map(x=>`<div class="comp"><b>${esc(x.name)} ${(100*x.p).toFixed(1)}/100</b><span>P1 lean • effective weight ${(x.w*(x.q??1)).toFixed(1)}</span></div>`).join('');
+
+    const cls=money.classification==='STRONG'?'good':money.classification==='PLAY'?'good':money.classification==='WATCH'?'warn':'bad';
+    box.innerHTML=`
+      <div class="${cls} leanname">${money.coverage<55?'INSUFFICIENT DATA — SKIP':'LEAN: '+esc(money.winner||'NO PICK')+' — '+esc(money.classification)}</div>
+      <div class="leanscore">${money.score==null||money.coverage<55?'N/A':Math.round(money.score*100)+'/100'} <span class="small">• coverage ${Math.round(money.coverage)}%</span></div>
+      <div class="small">${money.coverage<55?'Score withheld because weighted coverage is below 55%.':'Model score is not a calibrated win probability.'} Missing components: ${esc(money.parts.filter(x=>x.p==null||!x.q).map(x=>x.name).join(', ')||'none')}.</div>
+      <div class="small">Serve-return matchup: ${money.matchup?.p==null?'N/A':(money.matchup.p*100).toFixed(1)+'/100'} P1 lean${money.matchup?.aServe!=null&&money.matchup?.bServe!=null?' • P1 service matchup '+(money.matchup.aServe*100).toFixed(1)+'/100 • P2 service matchup '+(money.matchup.bServe*100).toFixed(1)+'/100':''}</div>
+      <div class="components">${comps}</div>
+      <div class="two" style="margin-top:8px">${summaryCard(pp1,c1)}${summaryCard(pp2,c2)}</div>
+      <div class="small" style="margin-top:8px">H2H ${h2h.p1Wins}-${h2h.p2Wins} (${h2h.n} decided) • up to 5 analysis requests</div>`;
+    return 'success';
+  }catch(e){
+    box.innerHTML=`<div class="bad">Analysis failed: ${esc(e.message)}</div><div class="small">Check the API response or retry later.</div>`;
+    if(e.status===429)throw e;
+    return 'failed';
+  }
+}
+$('scan').onclick=async()=>{
+  const key=$('key').value.trim();if(!key){$('status').textContent='Paste API key.';return}
+  scanning=true;scanKey=key;cache=new Map();requestCount=0;results=[];lastVerified=0;
+  $('scan').disabled=true;$('status').textContent='Loading fixtures…';renderHighest();
+  let success=0,failed=0,skipped=0;
+  try{
+    const pages=+$('pages').value,all=await loadFixtures(pages);
+    const now=Date.now(),end=now+(+$('hours').value)*3600000;
+    matches=all.filter(m=>upcoming(m,now)&&Date.parse(m.scheduled_time)<=end)
+      .sort((a,b)=>baseline(b)-baseline(a)||Date.parse(a.scheduled_time)-Date.parse(b.scheduled_time)).slice(0,+$('maxMatches').value);
+    render();
+    for(let i=0;i<matches.length;i++){
+      $('status').textContent=`Analyzing ${i+1}/${matches.length} • ${requestCount} API requests sent`;
+      const state=await analyze(i);
+      if(state==='success')success++;else if(state==='skipped')skipped++;else failed++;
+    }
+    if(results.length){
+      $('status').textContent='Rechecking upcoming schedule…';
+      const fresh=new Map((await loadFixtures(pages)).map(m=>[fixtureKey(m),m]));
+      for(const r of results){const m=fresh.get(fixtureKey(r.match));r.verified=!!m&&upcoming(m)&&Date.parse(m.scheduled_time)<=end&&norm(m.surface)===norm(r.match.surface)&&norm(m.format)===norm(r.match.format)&&sameId(matchPlayers(m).p1.id,matchPlayers(r.match).p1.id)&&sameId(matchPlayers(m).p2.id,matchPlayers(r.match).p2.id);if(r.verified)r.match=m}
+      lastVerified=Date.now();
+      // Move confirmed results into score order without rebuilding their cards.
+      for(const r of [...topCandidates()].reverse()){
+        const i=matches.findIndex(m=>fixtureKey(m)===fixtureKey(r.match)),node=$('match_'+i);
+        if(node)$('matches').prepend(node);
+      }
+      for(const r of results.filter(r=>!r.verified)){
+        const i=matches.findIndex(m=>fixtureKey(m)===fixtureKey(r.match));
+        if($('auto_'+i))$('auto_'+i).innerHTML='<b>SKIP — fixture could not be reconfirmed as upcoming with unchanged players, surface and format.</b>';
+      }
+    }
+    $('status').textContent=`Done • ${success} analyzed • ${failed} failed • ${skipped} skipped • ${results.filter(r=>r.verified).length} reconfirmed upcoming • ${requestCount} API requests. Shortlist limited to ${matches.length} matches.`;
+  }catch(e){lastVerified=0;$('status').textContent=`Scan stopped: ${e.message} • ${requestCount} API requests sent. No current pick verified.`}
+  finally{scanning=false;scanKey='';$('scan').disabled=false;renderHighest()}
+};
+setInterval(()=>{if(lastVerified&&!scanning){renderHighest();if(Date.now()-lastVerified>120000){for(let i=0;i<matches.length;i++){const box=$('auto_'+i);if(box)box.innerHTML='<b>SKIP — expired scan. Scan again.</b>'}}else{for(let i=0;i<matches.length;i++){if(!upcoming(matches[i])&&$('auto_'+i))$('auto_'+i).innerHTML='<b>SKIP — scheduled start has passed.</b>'}}}},10000);
+})();
+</script>
+</body>
+</html>
