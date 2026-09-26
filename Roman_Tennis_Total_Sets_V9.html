@@ -1,0 +1,187 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Roman Total Sets V9</title><style>
+:root{
+  --bg:#0e1117;--card:#171b24;--line:#2b3240;--txt:#f4f7fb;--muted:#9aa6b6;
+  --blue:#3b82f6;--green:#22c55e;--amber:#f59e0b;--red:#ef4444
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+.wrap{max-width:960px;margin:auto;padding:14px}
+h1{font-size:22px;margin:0 0 4px}
+.sub,.small{color:var(--muted);font-size:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:12px 0}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media(max-width:680px){.grid{grid-template-columns:1fr}}
+label{font-size:12px;color:var(--muted);display:block;margin-bottom:5px}
+input,select,button{width:100%;font-size:16px;border-radius:10px;border:1px solid var(--line);padding:11px}
+input,select{background:#10141b;color:var(--txt)}
+button{border:0;background:var(--blue);color:#fff;font-weight:800}
+button:disabled{opacity:.55}
+.status{margin-top:9px;font-size:13px;color:var(--muted)}
+.good{color:var(--green)}.warn{color:var(--amber)}.bad{color:var(--red)}
+.match{border-top:1px solid var(--line);padding:13px 0}.match:first-child{border-top:0}
+.name{font-weight:850}
+.meta{color:var(--muted);font-size:12px;line-height:1.55}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.row button{width:auto;padding:8px 10px;font-size:13px}
+.badge{display:inline-block;font-size:11px;font-weight:900;margin-bottom:6px}
+.qualifier{color:#64e48b}.watch{color:#f8bd55}.skip{color:#ff7c7c}
+.result{font-size:20px;font-weight:900;margin:8px 0}.bigprob{font-size:30px;font-weight:900}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media(max-width:720px){.two{grid-template-columns:1fr}}
+.panel{background:#11161e;border:1px solid var(--line);border-radius:13px;padding:12px}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:9px}
+.stat{background:#171d27;border:1px solid var(--line);border-radius:9px;padding:8px}.stat b{display:block}.stat span{font-size:10px;color:var(--muted)}
+.verify{margin-top:12px;padding:12px;border:1px dashed #3f4a5e;border-radius:11px}
+.verify-grid{display:grid;grid-template-columns:1fr auto;gap:8px}.verify-grid button{width:auto}
+table{width:100%;border-collapse:collapse;margin-top:8px;font-size:12px}td,th{padding:7px;border-bottom:1px solid var(--line);text-align:left}
+.section-title{font-weight:900;font-size:16px;margin-bottom:4px}
+</style></head><body><div class="wrap">
+<h1>Roman Total Sets V9</h1><div class="sub">Over / Under 2.5 sets • upcoming BO3 singles • Nigeria time</div>
+<div class="card"><div class="grid"><div><label>LiveTennisAPI key</label><input id="key" type="password" autocomplete="off" placeholder="API key with history access"></div>
+<div><label>Upcoming window</label><select id="hours"><option value="1">Next 1 hour</option><option value="2">Next 2 hours</option></select></div>
+<div><label>Minimum qualifying lean</label><select id="min"><option value="65">65 / 100</option><option value="70">70 / 100</option><option value="75">75 / 100</option></select></div>
+<div><label>Maximum matches to analyse</label><select id="cap"><option value="10">10 earliest</option><option value="20" selected>20 earliest</option><option value="40">40 earliest</option></select></div></div>
+<button id="scan" style="margin-top:12px">SCAN & ANALYSE TOTAL SETS</button><button id="stop" style="margin-top:8px;background:#394052" disabled>STOP SCAN</button>
+<div id="status" class="status">Ready. API key stays in this tab.</div></div>
+<div id="best" class="card">No scan yet.</div><div id="matches" class="card"></div>
+<div class="card"><details><summary>How the lean works</summary><p class="small">Under 2.5 means two completed sets; Over 2.5 means three. Only explicitly identified BO3 singles with normal deciding sets are supported. BO5, unknown formats, shortened sets and match-tiebreak formats are excluded.</p>
+<p class="small">The score combines each player's observed two/three-set history from the last year. Same-surface results receive full weight, other surfaces 35%; older results decay with a 120-day half-life. Six neutral prior observations reduce small-sample extremes. Shared matches count once in the combined estimate. The model checks recent-only and surface-only estimates and both player profiles before qualifying a pick.</p>
+<p class="small">A qualifier needs at least 12 valid matches and 6 on this surface for EACH player, 20 unique matches overall, an effective weighted sample of 16, recent data, agreement between profiles and a conservative lower bound above 55. Thresholds are engineering rules, not validated accuracy guarantees. Lean is not a calibrated win probability. Serve/return, injury and travel data are not supplied by this history model; check current player condition before using a selection. No bet is placed by this page.</p>
+<p class="small">Research: <a href="https://journals.sagepub.com/doi/abs/10.3233/JSA-200345" target="_blank" rel="noopener">Gollub: serve forecasting, small samples and opponent strength</a>. A full point-to-set model needs reliable serve/return inputs; this version uses an explicitly labelled history model instead of inventing those inputs. <a href="https://docs.livetennisapi.com/reference.html" target="_blank" rel="noopener">API reference</a>.</p></details></div></div>
+<script>
+'use strict';
+const API='https://api.livetennisapi.com/api/public/v1', $=id=>document.getElementById(id);
+const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const norm=x=>String(x??'').trim().toLowerCase(), day=86400000;
+const N=x=>x===null||x===undefined||x===''?null:(Number.isFinite(Number(x))?Number(x):null);
+const players=m=>({a:m?.players?.p1||m?.players?.player1||{},b:m?.players?.p2||m?.players?.player2||{}});
+const date=m=>Date.parse(m?.scheduled_time||m?.date||'');
+const wat=t=>Number.isFinite(Number(t))?new Intl.DateTimeFormat('en-GB',{timeZone:'Africa/Lagos',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}).format(new Date(t)):'Unknown time';
+const fmt=x=>Number.isFinite(x)?(100*x).toFixed(1):'—';
+let results=[],busy=false,controller=null,requests=0,cache=new Map(),scanKey='',endTime=0,threshold=65,selected=null,aborted=false;
+function special(m){return /tiebreak|tie.break|fast4|short|next.gen|laver|exhibition/i.test([m.deciding_set_rule,m.final_set_rule,m.scoring_format,m.tier].filter(Boolean).join(' '))||m.match_tiebreak===true;}
+function fixtureIssue(m,now=Date.now(),end=endTime){
+ const p=players(m),t=date(m);
+ if(!m.id||!p.a.id||!p.b.id||String(p.a.id)===String(p.b.id))return 'Missing or invalid fixture/player IDs';
+ if(norm(m.status)!=='upcoming'||m.live_at)return 'Not confirmed upcoming';
+ if(!Number.isFinite(t)||t<=now||t>end)return 'Outside upcoming window';
+ if(norm(m.draw)!=='singles'||m.format!=='BO3'||special(m))return 'Unsupported or unknown match format';
+ if(!['hard','clay','grass'].includes(norm(m.surface)))return 'Surface unknown';
+ if(/cancel|postpon|suspend|delay|walk|retir/i.test(String(m.event_status||'')+' '+String(m.outcome||'')))return 'Fixture status requires review';
+ return '';
+}
+function finalSets(m){
+ if(m.format!=='BO3'||norm(m.draw)!=='singles'||special(m)||norm(m.status)!=='completed'||norm(m.outcome)!=='completed')return null;
+ const x=m.score?.sets||m.sets;
+ if(!Array.isArray(x)||x.length!==2)return null;
+ const a=N(x[0]),b=N(x[1]);
+ if(!Number.isInteger(a)||!Number.isInteger(b)||!((a===2&&(b===0||b===1))||(b===2&&(a===0||a===1))))return null;
+ const winner=N(m.winner);if(winner!==1&&winner!==2)return null;
+ if((a>b?1:2)!==winner)return null;
+ const g=m.score?.games||m.games;
+ if(Array.isArray(g)&&Array.isArray(g[0])&&Array.isArray(g[1])){
+  const aw=[0,0];for(let i=0;i<a+b;i++){
+   const u=N(g[0][i]),v=N(g[1][i]);if(!Number.isInteger(u)||!Number.isInteger(v)||u<0||v<0)return null;
+   const hi=Math.max(u,v),lo=Math.min(u,v);if(!((hi===6&&lo<=4)||(hi===7&&(lo===5||lo===6))))return null;
+   aw[u>v?0:1]++;
+  }if(aw[0]!==a||aw[1]!==b)return null;
+ }
+ return a+b;
+}
+function history(rows,id,surface,now){
+ const seen=new Set(),valid=[],issues=[];
+ for(const m of rows){const p=players(m);if(String(p.a.id)!==String(id)&&String(p.b.id)!==String(id))continue;
+  const t=date(m);if(!Number.isFinite(t)||t>=now||now-t>365*day)continue;
+  if(/retir|walkover|withdraw/i.test(String(m.outcome||''))&&now-t<30*day)issues.push('Recent retirement/withdrawal needs review');
+  const sets=finalSets(m);if(!sets||!m.id||seen.has(String(m.id)))continue;seen.add(String(m.id));
+  valid.push({id:String(m.id),t,y:sets===3?1:0,same:norm(m.surface)===norm(surface),w:Math.pow(.5,(now-t)/(120*day))*(norm(m.surface)===norm(surface)?1:.35)});
+ }
+ valid.sort((a,b)=>b.t-a.t);return {rows:valid,issues:[...new Set(issues)],surface:valid.filter(x=>x.same).length,newest:valid[0]?.t||0};
+}
+function estimate(rows){
+ let w=0,w2=0,y=0;for(const r of rows){w+=r.w;w2+=r.w*r.w;y+=r.w*r.y;}
+ const p=(y+3)/(w+6),effective=w2?w*w/w2:0;
+ // A diagnostic normal approximation under the weighted Beta model; not calibrated match uncertainty.
+ const sd=Math.sqrt(p*(1-p)/(w+7));return {p,effective,low:Math.max(0,p-1.645*sd),high:Math.min(1,p+1.645*sd),weight:w};
+}
+function totalModel(a,b,now,min=threshold){
+ const union=[...new Map([...a.rows,...b.rows].map(x=>[x.id,x])).values()],e=estimate(union);
+ const pa=estimate(a.rows),pb=estimate(b.rows),surf=estimate(union.filter(x=>x.same)),recent=estimate(union.filter(x=>now-x.t<=90*day));
+ const over=e.p>=.5,side=x=>over?x.p:1-x.p,lean=side(e);
+ const conservative=over?e.low:1-e.high;
+ const scenarios=[side(pa),side(pb),side(surf),side(recent)];
+ const reasons=[...a.issues,...b.issues];
+ if(a.rows.length<12||b.rows.length<12)reasons.push('Need 12 valid completed BO3 matches per player');
+ if(a.surface<6||b.surface<6)reasons.push('Need 6 current-surface matches per player');
+ if(union.length<20||e.effective<16||e.weight<10)reasons.push('Insufficient independent weighted history');
+ if(now-a.newest>45*day||now-b.newest>45*day)reasons.push('Recent form unavailable within 45 days');
+ if(union.filter(x=>now-x.t<=90*day).length<10)reasons.push('Insufficient last-90-day history');
+ if(Math.min(...scenarios)<.55)reasons.push('Player, surface or recent profiles disagree');
+ if(lean*100<min)reasons.push('Lean below selected threshold');
+ if(conservative<.55)reasons.push('Uncertainty too large');
+ return {market:over?'OVER 2.5 SETS':'UNDER 2.5 SETS',lean,over:e.p,under:1-e.p,conservative,effective:e.effective,unique:union.length,scenarios,reasons:[...new Set(reasons)],qualifies:reasons.length===0,a,b};
+}
+async function api(path){
+ if(controller.signal.aborted)throw new DOMException('Stopped','AbortError');
+ requests++;const local=new AbortController(),abort=()=>local.abort();controller.signal.addEventListener('abort',abort,{once:true});const timer=setTimeout(()=>local.abort(),15000);
+ try{const r=await fetch(API+path,{headers:{'X-API-Key':scanKey,Accept:'application/json'},signal:local.signal,cache:'no-store'});let d;try{d=await r.json()}catch{throw Error('API returned invalid JSON');}
+ if(!r.ok){const e=Error('API '+r.status+': '+String(d.message||d.error||d.detail||'Request failed'));e.status=r.status;throw e;}return d;
+ }finally{clearTimeout(timer);controller.signal.removeEventListener('abort',abort);}
+}
+function unpack(d){const m=d?.data||d?.match||d;if(!m||Array.isArray(m)||typeof m!=='object')throw Error('Invalid fixture response');return m;}
+async function getHistory(id){
+ const k=String(id);if(cache.has(k))return cache.get(k);
+ const d=await api('/history/matches?player='+encodeURIComponent(id)+'&draw=singles&limit=100');
+ if(!Array.isArray(d.data))throw Error('History response has no match list');cache.set(k,d.data);return d.data;
+}
+function active(r){return !aborted&&r.model?.qualifies&&!r.error&&!fixtureIssue(r.m)&&Date.now()-r.checked<300000;}
+function ranked(){return [...results].sort((a,b)=>Number(active(b))-Number(active(a))||(b.model?.conservative||0)-(a.model?.conservative||0)||(b.model?.lean||0)-(a.model?.lean||0));}
+function render(){
+ const sorted=ranked(),best=sorted.find(active);
+ $('best').innerHTML=busy?'Analysing — final shortlist pending.':best?`<div class="badge qualifier">HIGHEST QUALIFYING TOTAL-SETS LEAN</div><div class="name">${esc(players(best.m).a.name)} vs ${esc(players(best.m).b.name)}</div><div class="result">${best.model.market}</div><div class="bigprob">${fmt(best.model.lean)} / 100</div><div class="meta">${wat(date(best.m))} WAT • uncalibrated history lean • ${fmt(best.model.conservative)} conservative score</div>`:'<b>SKIP — no current qualifying match.</b><div class="small">A high available lean alone does not override missing data, uncertainty or an expired fixture.</div>';
+ $('matches').innerHTML=sorted.map(r=>{const p=players(r.m),z=r.model,ok=active(r),reason=r.error||(z?.reasons.join(' • '))||(!ok?'Expired, stopped or no longer upcoming':'All history checks passed');return `<div class="match"><div class="badge ${ok?'qualifier':'skip'}">${busy?'PENDING':ok?'QUALIFIER':'SKIP'}</div><div class="name">${esc(p.a.name)} vs ${esc(p.b.name)}</div><div class="meta">${wat(date(r.m))} WAT • ${esc(r.m.surface)} • ${esc(r.m.tournament)} • checked ${r.checked?wat(r.checked):'—'}</div>${z?`<div class="result">${z.market} • ${fmt(z.lean)} / 100</div><div class="meta">Over ${fmt(z.over)} / Under ${fmt(z.under)} • ${z.unique} unique results • effective sample ${z.effective.toFixed(1)}<br>Player samples ${z.a.rows.length}/${z.b.rows.length} • surface samples ${z.a.surface}/${z.b.surface}<br>Conservative score ${fmt(z.conservative)} • not a validated win probability</div>`:''}<div class="meta">${esc(reason)}</div>${ok&&!busy?`<div class="row"><button data-pick="${esc(r.m.id)}">RECHECK & SELECT</button></div>`:''}</div>`;}).join('')||'<div class="small">No analysed fixtures in this window.</div>';
+ document.querySelectorAll('[data-pick]').forEach(b=>b.onclick=()=>selectPick(b.dataset.pick));
+}
+async function selectPick(id){
+ if(busy)return;const r=results.find(x=>String(x.m.id)===id);if(!r||!active(r))return render();
+ busy=true;controller=new AbortController();setBusy(true);
+ try{const fresh=unpack(await api('/matches/'+encodeURIComponent(id)));const old=players(r.m),p=players(fresh);
+ if(String(old.a.id)!==String(p.a.id)||String(old.b.id)!==String(p.b.id)||fresh.surface!==r.m.surface)throw Error('Fixture participants or surface changed; rescan.');
+ const issue=fixtureIssue(fresh);if(issue)throw Error(issue);r.m=fresh;r.checked=Date.now();selected=id;
+ $('status').textContent='Selected '+r.model.market+' — '+p.a.name+' vs '+p.b.name+'. Verify the bookmaker line is total SETS 2.5 and check current fitness. No wager placed.';
+ }catch(e){r.error=e.message;$('status').textContent='Selection cancelled: '+e.message;}finally{busy=false;setBusy(false);render();}
+}
+function setBusy(v){$('scan').disabled=v;$('stop').disabled=!v;for(const id of ['key','hours','cap','min'])$(id).disabled=v;}
+async function scan(){
+ if(busy)return;scanKey=$('key').value.trim();if(!scanKey){$('status').textContent='Enter your API key.';return;}
+ busy=true;aborted=false;selected=null;results=[];cache.clear();requests=0;controller=new AbortController();threshold=Number($('min').value);setBusy(true);render();
+ const started=Date.now();endTime=started+Number($('hours').value)*3600000;let all=[],truncated=false,eligible=0,examined=0;
+ try{
+ for(let page=0;page<5;page++){
+  $('status').textContent='Loading upcoming fixtures… '+requests+' requests';
+  const d=await api('/matches?status=upcoming&draw=singles&limit=100&offset='+page*100);if(!Array.isArray(d.data))throw Error('Fixture response has no match list');all.push(...d.data);
+  if(!d.meta?.has_more)break;if(page===4)truncated=true;
+ }
+ const pool=[...new Map(all.map(m=>[String(m.id),m])).values()].filter(m=>!fixtureIssue(m,started,endTime)).sort((a,b)=>date(a)-date(b));eligible=pool.length;
+ for(const m of pool.slice(0,Number($('cap').value))){
+  if(controller.signal.aborted)throw new DOMException('Stopped','AbortError');examined++;
+  $('status').textContent='Analysing '+examined+' / '+Math.min(eligible,Number($('cap').value))+' • '+requests+' requests';
+  try{const full=unpack(await api('/matches/'+encodeURIComponent(m.id)));const issue=fixtureIssue(full);if(issue)throw Error(issue);const p=players(full);
+   const h1=await getHistory(p.a.id),h2=await getHistory(p.b.id),now=Date.now();
+   const model=totalModel(history(h1,p.a.id,full.surface,now),history(h2,p.b.id,full.surface,now),now);
+   results.push({m:full,model,checked:now});
+  }catch(e){if(e.name==='AbortError'||[401,403,429].includes(e.status))throw e;results.push({m,error:e.message,checked:Date.now()});}
+  render();
+ }
+ // Reconfirm every eligible recommendation after the complete scan, not only the initial list.
+ for(const r of results.filter(x=>x.model?.qualifies)){
+  const fresh=unpack(await api('/matches/'+encodeURIComponent(r.m.id))),old=players(r.m),p=players(fresh);
+  const issue=fixtureIssue(fresh);if(issue||String(old.a.id)!==String(p.a.id)||String(old.b.id)!==String(p.b.id)||fresh.surface!==r.m.surface)r.error=issue||'Fixture changed — rescan';else {r.m=fresh;r.checked=Date.now();}
+ }
+ $('status').textContent='Done • analysed '+examined+' of '+eligible+' eligible fixtures • '+requests+' API requests. '+(truncated?'Fixture loading capped at 500. ':'')+(examined<eligible?'Shortlist limited to earliest '+examined+'. ':'')+'Best means best among analysed fixtures.';
+ }catch(e){aborted=true;$('status').textContent=(e.name==='AbortError'?'Scan stopped or request timed out.':e.message)+' No active picks from this incomplete scan.';}
+ finally{busy=false;setBusy(false);render();}
+}
+$('scan').onclick=scan;$('stop').onclick=()=>controller?.abort();
+for(const id of ['hours','min','cap','key'])$(id).onchange=()=>{results=[];selected=null;render();$('status').textContent='Settings changed — rescan.';};
+setInterval(()=>{if(!busy&&results.length)render();},15000);
+</script></body></html>
